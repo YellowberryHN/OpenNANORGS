@@ -5,7 +5,6 @@ use ruscii::spatial::Vec2;
 use std::cmp::PartialEq;
 use std::collections::HashSet;
 use std::fmt::Formatter;
-use crate::disassembler::Disassembler;
 
 #[derive(Debug)]
 pub enum ItemType {
@@ -63,7 +62,7 @@ impl Tank {
             + usize::from(pos.z) * usize::from(self.bounds.x) * usize::from(self.bounds.y)
     }
 
-    pub fn is_occupied(&self, pos: &Position) -> bool {
+    pub fn has_item(&self, pos: &Position) -> bool {
         let index = self.get_index(pos);
         self.elements[index].is_some()
     }
@@ -101,7 +100,7 @@ impl Tank {
                 z: rng.rand(Some((self.bounds.z - 1) as u32)) as u8,
             };
 
-            if !self.is_occupied(&pos) {
+            if !self.has_item(&pos) {
                 return pos;
             }
         }
@@ -150,6 +149,44 @@ impl Tank {
             None => false,
         }
     }
+
+    pub fn check_direction(&self, dir: u16, pos: &mut Position) -> bool {
+        match dir % 4 {
+            0 => {
+                if pos.y == 0 {
+                    false
+                } else {
+                    pos.y -= 1;
+                    true
+                }
+            }
+            1 => {
+                if pos.y == self.bounds.y - 1 {
+                    false
+                } else {
+                    pos.y += 1;
+                    true
+                }
+            }
+            2 => {
+                if pos.x == self.bounds.x - 1 {
+                    false
+                } else {
+                    pos.x += 1;
+                    true
+                }
+            }
+            3 => {
+                if pos.x == 0 {
+                    false
+                } else {
+                    pos.x -= 1;
+                    true
+                }
+            }
+            _ => panic!("Travel direction exceeded range ({dir})"),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -161,9 +198,9 @@ pub struct Bot {
 
     // CPU related
     pub instruction_pointer: u16,
-    stack_pointer: u16,
+    pub stack_pointer: u16,
     pub registers: [u16; 14],
-    program_memory: [u16; 3600],
+    pub program_memory: [u16; 3600],
     pub flags: CPUFlags,
 }
 #[derive(Debug)]
@@ -298,7 +335,7 @@ impl Bot {
     }
 
     pub fn is_occupied(pos: &Position, bots: &Vec<Bot>) -> bool {
-        Bot::occupied_by(pos, bots) != 0xFFFF
+        Self::occupied_by(pos, bots) != 0xFFFF
     }
 
     pub fn occupied_by(pos: &Position, bots: &Vec<Bot>) -> u16 {
@@ -310,42 +347,20 @@ impl Bot {
         0xFFFFu16
     }
 
-    pub fn check_direction(dir: u16, pos: &mut Position, tank: &Tank) -> bool {
-        match dir % 4 {
-            0 => {
-                if pos.y == 0 {
-                    false
-                } else {
-                    pos.y -= 1;
-                    true
-                }
-            }
-            1 => {
-                if pos.y == tank.bounds.y - 1 {
-                    false
-                } else {
-                    pos.y += 1;
-                    true
-                }
-            }
-            2 => {
-                if pos.x == tank.bounds.x - 1 {
-                    false
-                } else {
-                    pos.x += 1;
-                    true
-                }
-            }
-            3 => {
-                if pos.x == 0 {
-                    false
-                } else {
-                    pos.x -= 1;
-                    true
-                }
-            }
-            _ => panic!("Travel direction exceeded range ({dir})"),
+    pub fn travel(idx: usize, dir: u16, tank: &Tank, bots: &mut Vec<Bot>) -> bool {
+        let mut new_position = bots[idx].position.clone();
+        let in_bounds: bool = tank.check_direction(dir, &mut new_position);
+
+        if in_bounds && !Bot::is_occupied(&new_position, bots) && bots[idx].has_energy(10) {
+            bots[idx].energy -= 10;
+            bots[idx].position = new_position;
+            return true
+        } else if bots[idx].has_energy(1) {
+            bots[idx].energy -= 1;
+            return false
         }
+
+        false
     }
 }
 
@@ -863,23 +878,12 @@ impl Bot {
         bots[idx].increment_ip();
     }
 
-    fn op_travel(idx: usize, direction: Operand, tank: &Tank, bots: &mut Vec<Bot>) {
-        let direction = bots[idx].get(&direction);
-        let mut new_position = bots[idx].position.clone();
+    fn op_travel(idx: usize, direction: Operand, tank: &Tank, bots: &mut Vec<Bot>)  {
+        let bot = &mut bots[idx];
+        let direction = bot.get(&direction);
 
-        let mut failed: bool = !Self::check_direction(direction, &mut new_position, tank);
-
-        if !Bot::is_occupied(&new_position, bots) && !failed && bots[idx].has_energy(10) {
-            bots[idx].energy -= 10;
-            bots[idx].position = new_position;
-        } else if bots[idx].has_energy(1) {
-            bots[idx].energy -= 1;
-            failed = true;
-        } else {
-            failed = true;
-        }
-
-        bots[idx].flags.success = !failed;
+        let success = Bot::travel(idx, direction, tank, bots);
+        bots[idx].flags.success = success;
 
         bots[idx].increment_ip();
     }
@@ -1003,7 +1007,7 @@ impl Bot {
             let direction = bots[idx].get(&direction);
             let mut new_position = bots[idx].position.clone();
 
-            if !Self::check_direction(direction, &mut new_position, tank) {
+            if !tank.check_direction(direction, &mut new_position) {
                 bots[idx].flags.success = false;
             }
 
@@ -1035,7 +1039,7 @@ impl Bot {
         let direction = bots[idx].get(&direction);
         let mut new_position = bots[idx].position.clone();
 
-        if Self::check_direction(direction, &mut new_position, tank) {
+        if tank.check_direction(direction, &mut new_position) {
             let other_bot_idx = Bot::occupied_by(&new_position, bots) as usize;
             if other_bot_idx != 0xFFFF {
                 let offset = bots[idx].get(&offset) as usize;
@@ -1056,7 +1060,7 @@ impl Bot {
         let direction = bots[idx].get(&dest);
         let mut new_position = bots[idx].position.clone();
 
-        if Self::check_direction(direction, &mut new_position, tank) {
+        if tank.check_direction(direction, &mut new_position) {
             let other_bot_idx = Bot::occupied_by(&new_position, bots) as usize;
             if other_bot_idx != 0xFFFF {
                 let offset = bots[idx].get(&offset) as usize;
