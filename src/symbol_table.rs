@@ -36,7 +36,7 @@ impl SymbolTable {
                     if self.position % 3 != 0 {
                         match &ast[i + 1] {
                             ParserToken::Instruction(_) => {
-                                self.position += (3 - self.position % 3)
+                                self.position += 3 - self.position % 3
                             }
                             _ => {}
                         }
@@ -44,10 +44,10 @@ impl SymbolTable {
 
                     self.add_label(label, self.position);
                 }
-                ParserToken::Instruction(instruction) => {
+                ParserToken::Instruction(_) => {
                     // realign addresses to 3 word border
                     if self.position % 3 != 0 {
-                        self.position += (3 - self.position % 3);
+                        self.position += 3 - self.position % 3;
                     }
 
                     // every operation takes up 3 words of space

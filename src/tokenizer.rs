@@ -1,6 +1,3 @@
-use crate::parser::Parser;
-use clap::builder::TypedValueParser;
-
 #[derive(Debug, PartialEq, Clone)]
 pub enum Token {
     EOF,

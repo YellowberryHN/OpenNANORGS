@@ -1,5 +1,5 @@
-use crate::parser::{Instruction, Operand, Parser, ParserToken, PlusMinus, Register, Value};
-use crate::tokenizer::{InstructionType, Tokenizer};
+use crate::parser::{Instruction, Operand, Parser, ParserToken, PlusMinus, Value};
+use crate::tokenizer::Tokenizer;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -169,7 +169,7 @@ impl Compiler {
                                 Operand::ImmediateValue(value) => {
                                     op1_offset = match value {
                                         Value::Number(num) => *num,
-                                        Value::Label(label) =>
+                                        Value::Label(_) =>
                                             panic!("Label cannot be used as offset")
                                     };
                                 }
@@ -303,8 +303,7 @@ impl Compiler {
     }
 
     fn get_modes(instruction: &Instruction, op1_carry: bool, op2_carry: bool) -> u16 {
-        let mut value = 0;
-        value = u16::from(instruction.to_owned().operand1) << 2;
+        let mut value = u16::from(instruction.to_owned().operand1) << 2;
         value |= u16::from(instruction.to_owned().operand2);
 
         value <<= 12;

@@ -1,9 +1,11 @@
-use crate::parser::{Operand, Register, Value};
+use crate::parser::{Operand, PlusMinus, Register, Value};
 use crate::rng::{LegacyRNG, ModernRNG, RNGSystem};
 use crate::tokenizer::InstructionType;
 use ruscii::spatial::Vec2;
 use std::cmp::PartialEq;
+use std::collections::HashSet;
 use std::fmt::Formatter;
+use crate::disassembler::Disassembler;
 
 #[derive(Debug)]
 pub enum ItemType {
@@ -33,8 +35,8 @@ impl Item {
 pub struct Tank {
     bounds: Position,
     pub score: u64,
-    sludge_types: u8,
-    toxic_sludge: Vec<u8>,
+    pub sludge_types: u8,
+    pub toxic_sludge: Vec<u8>,
     pub elements: Vec<Option<Item>>,
 }
 
@@ -105,8 +107,24 @@ impl Tank {
         }
     }
 
+    // TODO: rework this method to work the same way as NANORGS
+    fn calculate_toxic(amount: u8, rng: &mut Box<dyn RNGSystem>) -> Vec<u8> {
+        let toxic_count = (amount / 5) as usize;
+
+        let mut toxic = HashSet::new();
+
+        while toxic.len() < toxic_count {
+            let num = rng.rand(Some((amount + 1) as u32)) as u8;
+            toxic.insert(num);
+        }
+
+        toxic.into_iter().collect()
+    }
+
+    // TODO: rework this method to work the same way as NANORGS
     pub fn initial_fill(&mut self, num_items: usize, rng: &mut Box<dyn RNGSystem>) {
         self.sludge_types = rng.rand(32.into()) as u8;
+        self.toxic_sludge = Tank::calculate_toxic(self.sludge_types, rng);
 
         for _ in 0..num_items {
             let pos = self.get_random_position(rng);
@@ -291,6 +309,44 @@ impl Bot {
         }
         0xFFFFu16
     }
+
+    pub fn check_direction(dir: u16, pos: &mut Position, tank: &Tank) -> bool {
+        match dir % 4 {
+            0 => {
+                if pos.y == 0 {
+                    false
+                } else {
+                    pos.y -= 1;
+                    true
+                }
+            }
+            1 => {
+                if pos.y == tank.bounds.y - 1 {
+                    false
+                } else {
+                    pos.y += 1;
+                    true
+                }
+            }
+            2 => {
+                if pos.x == tank.bounds.x - 1 {
+                    false
+                } else {
+                    pos.x += 1;
+                    true
+                }
+            }
+            3 => {
+                if pos.x == 0 {
+                    false
+                } else {
+                    pos.x -= 1;
+                    true
+                }
+            }
+            _ => panic!("Travel direction exceeded range ({dir})"),
+        }
+    }
 }
 
 // Bot CPU
@@ -298,6 +354,7 @@ impl Bot {
     fn set_instruction_pointer(&mut self, ip: u16) {
         self.instruction_pointer = ip % self.program_memory.len() as u16;
         self.instruction_pointer -= self.instruction_pointer % 3;
+        //eprintln!("IP: {:?}", self.instruction_pointer);
     }
 
     fn increment_ip(&mut self) {
@@ -331,7 +388,20 @@ impl Bot {
                 Value::Number(value) => *value,
                 _ => panic!("Immediate value was not Number"),
             },
-            Operand::RegisterIndexedDirect(_, _, _) => todo!(),
+            Operand::RegisterIndexedDirect(base, operator, offset) => {
+                // TODO: this is horrible
+                let register_value = self.get(base.as_ref());
+                let offset_value = self.get(offset.as_ref());
+
+                self.get(
+                    &Operand::Direct(
+                        Value::Number(match operator {
+                            PlusMinus::Plus => register_value + offset_value,
+                            PlusMinus::Minus => register_value.wrapping_sub(offset_value)
+                        })
+                    )
+                )
+            },
         }
     }
 
@@ -354,7 +424,20 @@ impl Bot {
                 // eprintln!("{}", self.stack_pointer);
                 panic!("Attempt to put something into immediate value");
             }
-            Operand::RegisterIndexedDirect(_, _, _) => todo!(),
+            Operand::RegisterIndexedDirect(base, operator, offset) => {
+                let register_value = self.get(base.as_ref());
+                let offset_value = self.get(offset.as_ref());
+
+                self.put(
+                    &Operand::Direct(
+                        Value::Number(match operator {
+                            PlusMinus::Plus => register_value + offset_value,
+                            PlusMinus::Minus => register_value.wrapping_sub(offset_value)
+                        })
+                    ),
+                    value
+                )
+            },
         };
     }
 
@@ -422,8 +505,16 @@ impl Bot {
                 1 => Operand::Register(op1_value.into()),
                 2 => Operand::ImmediateValue(Value::Number(op1_value)),
                 3 => {
-                    todo!("I don't feel like doing this right now.");
-                    //Operand::RegisterIndexedDirect(_, _, _)
+                    let op1_reg = op1_value >> 12;
+                    let op1_reg_offset = op1_value & 0xFFF;
+
+                    let op1_reg_sub = instruction[0] >> 11 & 0x1 == 1;
+
+                    Operand::RegisterIndexedDirect(
+                        Box::new(Operand::Register(op1_reg.into())),
+                        if op1_reg_sub { PlusMinus::Minus } else { PlusMinus::Plus },
+                        Box::new(Operand::ImmediateValue(Value::Number(op1_reg_offset)))
+                    )
                 }
                 _ => panic!("Unknown addressing mode"),
             };
@@ -433,14 +524,16 @@ impl Bot {
                 1 => Operand::Register(op2_value.into()),
                 2 => Operand::ImmediateValue(Value::Number(op2_value)),
                 3 => {
-                    eprintln!(
-                        "{:#?}, {:?}, {:?}",
-                        InstructionType::from(instruction_id),
-                        op1,
-                        op2_value
-                    );
-                    todo!("I don't feel like doing this right now.");
-                    //Operand::RegisterIndexedDirect(_, _, _)
+                    let op2_reg = op2_value >> 12;
+                    let op2_reg_offset = op2_value & 0xFFF;
+
+                    let op2_reg_sub = instruction[0] >> 10 & 0x1 == 1;
+
+                    Operand::RegisterIndexedDirect(
+                        Box::new(Operand::Register(op2_reg.into())),
+                        if op2_reg_sub { PlusMinus::Minus } else { PlusMinus::Plus },
+                        Box::new(Operand::ImmediateValue(Value::Number(op2_reg_offset)))
+                    )
                 }
                 _ => panic!("Unknown addressing mode"),
             };
@@ -561,10 +654,10 @@ impl Bot {
                 }
                 // InstructionType::CKSUM => {},
                 // not an instruction, do nothing
-                _ => Bot::op_nop(idx, bots),
-            }
+                _ => Bot::op_nop(idx, bots)
+            };
         } else {
-            return;
+            Bot::op_nop(idx, bots);
         }
     }
 }
@@ -607,7 +700,7 @@ impl Bot {
     fn op_ret(idx: usize, bots: &mut Vec<Bot>) {
         bots[idx].energy -= 1;
         let address = bots[idx].pop();
-        bots[idx].jump_to(Operand::Direct(Value::Number(address)));
+        bots[idx].set_instruction_pointer(address);
     }
 
     fn op_jmp(idx: usize, to: Operand, bots: &mut Vec<Bot>) {
@@ -771,43 +864,10 @@ impl Bot {
     }
 
     fn op_travel(idx: usize, direction: Operand, tank: &Tank, bots: &mut Vec<Bot>) {
-        let mut new_position = bots[idx].position.clone();
-        let mut failed: bool = false;
-
         let direction = bots[idx].get(&direction);
+        let mut new_position = bots[idx].position.clone();
 
-        // TODO: break direction check out into a function, for charge/peek/poke
-        match direction % 4 {
-            0 => {
-                if new_position.y == 0 {
-                    failed = true;
-                } else {
-                    new_position.y -= 1;
-                }
-            }
-            1 => {
-                if new_position.y == tank.bounds.y - 1 {
-                    failed = true;
-                } else {
-                    new_position.y += 1;
-                }
-            }
-            2 => {
-                if new_position.x == tank.bounds.x - 1 {
-                    failed = true;
-                } else {
-                    new_position.x += 1;
-                }
-            }
-            3 => {
-                if new_position.x == 0 {
-                    failed = true;
-                } else {
-                    new_position.x -= 1;
-                }
-            }
-            _ => panic!("Travel direction exceeded range ({direction})"),
-        };
+        let mut failed: bool = !Self::check_direction(direction, &mut new_position, tank);
 
         if !Bot::is_occupied(&new_position, bots) && !failed && bots[idx].has_energy(10) {
             bots[idx].energy -= 10;
@@ -943,37 +1003,9 @@ impl Bot {
             let direction = bots[idx].get(&direction);
             let mut new_position = bots[idx].position.clone();
 
-            match direction % 4 {
-                0 => {
-                    if new_position.y == 0 {
-                        bots[idx].flags.success = false;
-                    } else {
-                        new_position.y -= 1;
-                    }
-                }
-                1 => {
-                    if new_position.y == tank.bounds.y - 1 {
-                        bots[idx].flags.success = false;
-                    } else {
-                        new_position.y += 1;
-                    }
-                }
-                2 => {
-                    if new_position.x == tank.bounds.x - 1 {
-                        bots[idx].flags.success = false;
-                    } else {
-                        new_position.x += 1;
-                    }
-                }
-                3 => {
-                    if new_position.x == 0 {
-                        bots[idx].flags.success = false;
-                    } else {
-                        new_position.x -= 1;
-                    }
-                }
-                _ => bots[idx].flags.success = false,
-            };
+            if !Self::check_direction(direction, &mut new_position, tank) {
+                bots[idx].flags.success = false;
+            }
 
             if pos != new_position {
                 let other_bot_idx = Bot::occupied_by(&new_position, bots) as usize;
@@ -987,6 +1019,8 @@ impl Bot {
                         bots[other_bot_idx].energy += amount;
                         bots[idx].flags.success = true;
                     }
+                } else {
+                    bots[idx].flags.success = false;
                 }
             } else {
                 bots[idx].flags.success = false;
@@ -998,11 +1032,46 @@ impl Bot {
     }
 
     fn op_poke(idx: usize, direction: Operand, offset: Operand, tank: &Tank, bots: &mut Vec<Bot>) {
-        todo!()
+        let direction = bots[idx].get(&direction);
+        let mut new_position = bots[idx].position.clone();
+
+        if Self::check_direction(direction, &mut new_position, tank) {
+            let other_bot_idx = Bot::occupied_by(&new_position, bots) as usize;
+            if other_bot_idx != 0xFFFF {
+                let offset = bots[idx].get(&offset) as usize;
+                bots[other_bot_idx].program_memory[offset] = bots[idx].registers[0];
+                bots[idx].flags.success = true;
+            } else {
+                bots[idx].flags.success = false;
+            }
+        } else {
+            bots[idx].flags.success = false;
+        }
+
+        bots[idx].energy -= 1;
+        bots[idx].increment_ip();
     }
 
-    fn op_peek(idx: usize, dest: Operand, amount: Operand, tank: &Tank, bots: &mut Vec<Bot>) {
-        todo!()
+    fn op_peek(idx: usize, dest: Operand, offset: Operand, tank: &Tank, bots: &mut Vec<Bot>) {
+        let direction = bots[idx].get(&dest);
+        let mut new_position = bots[idx].position.clone();
+
+        if Self::check_direction(direction, &mut new_position, tank) {
+            let other_bot_idx = Bot::occupied_by(&new_position, bots) as usize;
+            if other_bot_idx != 0xFFFF {
+                let offset = bots[idx].get(&offset) as usize;
+                let value = bots[other_bot_idx].program_memory[offset];
+                bots[idx].put(&dest, value);
+                bots[idx].flags.success = true;
+            } else {
+                bots[idx].flags.success = false;
+            }
+        } else {
+            bots[idx].flags.success = false;
+        }
+
+        bots[idx].energy -= 1;
+        bots[idx].increment_ip();
     }
 
     // Extended Instruction Set (WIP)
@@ -1103,8 +1172,8 @@ impl Emulator {
                 }
             };
 
-            let mut bot = Bot::new(id | 0x100, pos);
-            // bot.flash_drone();
+            let mut bot = Bot::new(id + 50, pos);
+            bot.flash_drone();
             bots.push(bot);
         }
 

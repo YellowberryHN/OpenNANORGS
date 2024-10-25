@@ -12,7 +12,7 @@ pub mod tokenizer;
 use crate::cli::Arguments;
 use crate::compiler::Compiler;
 use crate::disassembler::Disassembler;
-use crate::emulator::{Bot, Emulator, Item, ItemType, Position, Tank};
+use crate::emulator::{Bot, Emulator, ItemType};
 use byteorder::{BigEndian, WriteBytesExt};
 use clap::Parser as clapParse;
 use ruscii::app::{App, Config, State};
@@ -177,8 +177,8 @@ fn main() {
             pencil.draw_text(&format!("Seed: {}", &args.seed.unwrap()), Vec2::xy(0, 41));
             pencil.draw_text(
                 &format!(
-                    "Bot[0] IP: {}, Flags: {}",
-                    emulator.bots[0].instruction_pointer, emulator.bots[0].flags
+                    "Bot[0] IP: {}, SP: {}, Energy: {}, Flags: {}",
+                    emulator.bots[0].instruction_pointer, emulator.bots[0].stack_pointer, emulator.bots[0].energy, emulator.bots[0].flags
                 ),
                 Vec2::xy(0, 42),
             );
@@ -186,9 +186,14 @@ fn main() {
                 &format!("Bot[0] Registers: {:?}", emulator.bots[0].registers),
                 Vec2::xy(0, 43),
             );
+            pencil.draw_text(
+                &format!("Toxic Sludge: {:?} of {}", emulator.tank.toxic_sludge, emulator.tank.sludge_types),
+                Vec2::xy(0, 44)
+            );
         });
     }
 
+    // TODO: change this condition to be after all ticks processed, regardless of amount
     if emulator.current_tick == emulator.iterations {
         let mut live_bots = 0;
         let mut live_drones = 0;
